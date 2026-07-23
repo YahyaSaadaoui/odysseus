@@ -9,6 +9,8 @@ import httpx
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from src.constants import TTS_CACHE_DIR
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +37,7 @@ class TTSService:
       "endpoint:<id>"   — OpenAI-compatible /audio/speech via ModelEndpoint
     """
 
-    def __init__(self, cache_dir: str = "data/tts_cache"):
+    def __init__(self, cache_dir: str = TTS_CACHE_DIR):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._kokoro = None  # lazy-init
@@ -66,7 +68,7 @@ class TTSService:
         if provider == "local":
             kokoro = self._get_kokoro()
             return kokoro is not None and kokoro.available
-        if provider.startswith("endpoint:"):
+        if isinstance(provider, str) and provider.startswith("endpoint:"):
             return True  # assume reachable; errors surface at synthesis time
         return False
 

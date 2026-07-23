@@ -4,6 +4,7 @@
  * Extracted from document.js to reduce file size.
  */
 
+import { topPortalZ } from './toolWindowZOrder.js';
 import uiModule from './ui.js';
 import sessionModule from './sessions.js';
 import spinnerModule from './spinner.js';
@@ -18,6 +19,7 @@ let _esc;          // HTML-escape function
 let _getDocs;      // () => Map of open docs
 let _isOpenFn;     // () => boolean — is doc panel open
 let _createDocument;
+let _newDocument;
 let _loadDocument;
 let _switchToDoc;
 let _openPanel;
@@ -30,6 +32,7 @@ export function initLibrary(config) {
   _getDocs        = config.getDocs;
   _isOpenFn       = config.isOpen;
   _createDocument = config.createDocument;
+  _newDocument = config.newDocument;
   _loadDocument   = config.loadDocument;
   _switchToDoc    = config.switchToDoc;
   _openPanel      = config.openPanel;
@@ -76,6 +79,15 @@ function _hlSearch(text) {
                        '<mark class="doclib-search-hl">$1</mark>');
   } catch { return esc; }
 }
+
+function _safeResearchHref(raw) {
+  try {
+    const parsed = new URL(String(raw || '').trim(), window.location.origin);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return _esc(parsed.href);
+  } catch {}
+  return '';
+}
+
 let _libraryEscHandler = null;
 let _librarySelectMode = false;
 let _librarySelectedIds = new Set();
@@ -218,7 +230,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     dd.style.right = (window.innerWidth - rect.right) + 'px';
     dd.style.top = (rect.bottom + 2) + 'px';
     dd.style.display = 'block';
-    dd.style.zIndex = '100000';
+    dd.style.zIndex = String(topPortalZ());
     requestAnimationFrame(() => {
       const mr = dd.getBoundingClientRect();
       if (mr.bottom > window.innerHeight - 8) {
@@ -391,6 +403,27 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     }
   }
 
+  function libraryRemoveDocumentFromState(docId) {
+    const removed = _libraryDocs.find(d => String(d.id) === String(docId));
+    _libraryDocs = _libraryDocs.filter(d => String(d.id) !== String(docId));
+    _librarySelectedIds.delete(docId);
+    _libraryTotal = Math.max(0, _libraryTotal - 1);
+
+    const lang = removed && (removed.language || 'text');
+    if (lang && Object.prototype.hasOwnProperty.call(_libraryLanguages, lang)) {
+      const next = Math.max(0, Number(_libraryLanguages[lang] || 0) - 1);
+      if (next > 0) {
+        _libraryLanguages[lang] = next;
+      } else {
+        delete _libraryLanguages[lang];
+      }
+    }
+
+    libraryRenderStats();
+    libraryRenderLangChips();
+    libraryUpdateBulkCount();
+  }
+
   function libraryRenderGrid() {
     const grid = document.getElementById('doclib-grid');
     if (!grid) return;
@@ -548,13 +581,12 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     const pieces = [];
     if (doc.session_name) pieces.push(`<span>${_esc(doc.session_name)}</span>`);
     if (doc.language && doc.language !== 'text') {
-      const ic = langIcon(doc.language, 11, { style: 'vertical-align:-2px;flex-shrink:0;opacity:0.65;color:currentColor;' });
-      pieces.push(`<span style="display:inline-flex;align-items:center;gap:3px;">${ic}${_esc(doc.language)}</span>`);
+      // Per-language icon lives in the title row above; just the language
+      // name here keeps the meta line scannable without duplicating the icon.
+      pieces.push(`<span>${_esc(doc.language)}</span>`);
     }
     pieces.push(`<span>${_esc(libraryRelativeTime(doc.updated_at))}</span>`);
     meta.innerHTML = pieces.join('<span style="opacity:0.5;">\u00b7</span>');
-    // Strip the per-language icon from the meta line \u2014 it now sits next to the
-    // title above, so duplicating it here was redundant.
     content.appendChild(meta);
     card.appendChild(content);
 
@@ -600,7 +632,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
           const rect = menuBtn.getBoundingClientRect();
           document.body.appendChild(dropdown);
           dropdown.dataset.owner = doc.id;
-          dropdown.style.cssText = 'position:fixed;z-index:10000;min-width:0;width:max-content;padding:4px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);backdrop-filter:blur(12px);font-size:12px;display:block;';
+          dropdown.style.cssText = `position:fixed;z-index:${topPortalZ()};min-width:0;width:max-content;padding:4px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.3);backdrop-filter:blur(12px);font-size:12px;display:block;`;
           dropdown.style.top = (rect.bottom + 4) + 'px';
           dropdown.style.left = 'auto';
           dropdown.style.right = (window.innerWidth - rect.right) + 'px';
@@ -709,8 +741,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
         const res = await fetch(`${API_BASE}/api/document/${doc.id}/archive?archived=${toArchived}`, { method: 'POST', credentials: 'same-origin' });
         if (!res.ok) throw new Error('failed');
         // Drop it from the current view (it no longer belongs here) and refresh.
-        _libraryDocs = _libraryDocs.filter(d => d.id !== doc.id);
-        _libraryTotal = Math.max(0, _libraryTotal - 1);
+        libraryRemoveDocumentFromState(doc.id);
         libraryRenderGrid();
         if (uiModule) uiModule.showToast(toArchived ? 'Archived' : 'Restored');
       } catch { if (uiModule) uiModule.showError('Failed to ' + (toArchived ? 'archive' : 'restore')); }
@@ -802,8 +833,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       try {
         const res = await fetch(`${API_BASE}/api/document/${doc.id}/archive?archived=${toArchived}`, { method: 'POST', credentials: 'same-origin' });
         if (!res.ok) throw new Error('failed');
-        _libraryDocs = _libraryDocs.filter(d => d.id !== doc.id);
-        _libraryTotal = Math.max(0, _libraryTotal - 1);
+        libraryRemoveDocumentFromState(doc.id);
         libraryRenderGrid();
         if (uiModule) uiModule.showToast(toArchived ? 'Archived' : 'Restored');
       } catch { if (uiModule) uiModule.showError('Failed to ' + (toArchived ? 'archive' : 'restore')); }
@@ -1170,9 +1200,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
         card.addEventListener('transitionend', () => card.remove(), { once: true });
         setTimeout(() => { if (card.parentElement) card.remove(); }, 400);
       }
-      _libraryDocs = _libraryDocs.filter(d => d.id !== docId);
-      _libraryTotal = Math.max(0, _libraryTotal - 1);
-      libraryRenderStats();
+      libraryRemoveDocumentFromState(docId);
       if (uiModule) uiModule.showToast('Document deleted');
     } catch (e) {
       if (uiModule) uiModule.showError(`Failed to delete document: ${e.message || e}`);
@@ -1570,9 +1598,13 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     modal.className = 'modal';
     modal.id = 'doclib-modal';
     modal.innerHTML = `
-      <div class="modal-content doclib-modal-content" style="width:min(640px, 92vw);max-height:85vh;background:var(--bg);">
+      <div class="modal-content doclib-modal-content" style="width:min(640px, 92vw);background:var(--bg);">
         <div class="modal-header">
-          <h4><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>Library</h4>
+          <!-- Header title + icon mirror the currently-active sub-tab (Chats /
+               Documents / Research / Archive) so the user sees ONE icon at
+               the top representing the section they're in, with the tab
+               strip below as sub-navigation. _switchLibTab() updates this. -->
+          <h4 id="doclib-header-title"><span id="doclib-header-icon" style="vertical-align:-2px;margin-right:4px;display:inline-flex;"></span><span id="doclib-header-text">Library</span></h4>
           <button class="close-btn" id="doclib-close">\u2716</button>
         </div>
         <div class="lib-tabs" id="doclib-lib-tabs" style="padding:0 10px;">
@@ -1805,6 +1837,27 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       grid.parentElement.appendChild(btn);
     }
 
+    // SVG markup + label for each tab — used to keep the modal header
+    // in sync with whichever sub-tab the user is on.
+    const _TAB_HEADERS = {
+      chats: {
+        label: 'Chats',
+        svg: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+      },
+      documents: {
+        label: 'Documents',
+        svg: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>',
+      },
+      research: {
+        label: 'Research',
+        svg: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>',
+      },
+      archive: {
+        label: 'Archive',
+        svg: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>',
+      },
+    };
+
     function _switchLibTab(tab) {
       _activeLibTab = tab;
       _tabBtns.forEach(b => b.classList.toggle('active', b.dataset.doclibTab === tab));
@@ -1815,6 +1868,14 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
           p.style.display = 'none';
         }
       });
+      // Sync the modal header icon + label to match the active sub-tab.
+      const hdr = _TAB_HEADERS[tab];
+      if (hdr) {
+        const ico = document.getElementById('doclib-header-icon');
+        const txt = document.getElementById('doclib-header-text');
+        if (ico) ico.innerHTML = hdr.svg;
+        if (txt) txt.textContent = hdr.label;
+      }
       if (tab === 'chats') _renderLibChats();
       else if (tab === 'archive') _renderLibArchive();
       else if (tab === 'research') _renderLibResearch();
@@ -2632,7 +2693,7 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
         const data = await res.json();
         _researchItems = data.research || data || [];
       } catch (e) {
-        grid.innerHTML = `<div class="hwfit-loading">Failed to load: ${e.message}</div>`;
+        grid.innerHTML = `<div class="hwfit-loading">Failed to load: ${_esc(e.message)}</div>`;
         return;
       }
       _renderResearchGrid();
@@ -2674,9 +2735,9 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       const sources = Array.isArray(detail.sources) ? detail.sources : [];
       const sourcesList = sources.slice(0, 12).map((src, i) => {
         const title = _esc(src.title || src.url || `Source ${i + 1}`);
-        const url = src.url || '';
+        const url = _safeResearchHref(src.url);
         return url
-          ? `<li><a href="${_esc(url)}" target="_blank" rel="noopener">${title}</a></li>`
+          ? `<li><a href="${url}" target="_blank" rel="noopener">${title}</a></li>`
           : `<li>${title}</li>`;
       }).join('');
       const sourcesHtml = sources.length
@@ -3095,8 +3156,10 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
       return new Date(iso).toLocaleDateString();
     }
 
-    // Switch to initial tab if not documents
-    if (_activeLibTab !== 'documents') _switchLibTab(_activeLibTab);
+    // Switch to the initial tab. Always call this — even when the
+    // default ('documents') matches — so the modal header's icon + label
+    // sync from "Library" to the active sub-tab on first open.
+    _switchLibTab(_activeLibTab);
 
     const searchInput = document.getElementById('doclib-search');
     searchInput.addEventListener('input', () => {
@@ -3163,16 +3226,16 @@ let _libraryArchivedView = false;   // Documents tab showing archived docs?
     const createBtn = document.getElementById('doclib-create-btn');
     if (createBtn) {
       createBtn.addEventListener('click', async () => {
-        // Create a new session, then create a blank document in it
         try {
-          const sRes = await fetch('/api/session', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Untitled Document' }) });
-          const sData = await sRes.json();
-          const sessionId = sData.session_id;
-          await _createDocument(sessionId);
-          // Close library and open the new session
+          if (_newDocument) {
+            await _newDocument();
+          } else {
+            const sessionId = sessionModule && sessionModule.getCurrentSessionId && sessionModule.getCurrentSessionId();
+            if (!sessionId) throw new Error('No active session');
+            await _createDocument(sessionId);
+          }
           closeLibrary();
-          if (window.sessionsModule) window.sessionsModule.loadSession(sessionId);
-          setTimeout(() => _openPanel(), 300);
+          setTimeout(() => _openPanel(), 50);
         } catch (e) {
           console.error('Failed to create document:', e);
           if (uiModule) uiModule.showError('Failed to create document');
